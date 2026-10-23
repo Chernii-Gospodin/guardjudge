@@ -1,0 +1,15 @@
+# Training environment (GPU machine: Colab/Kaggle; plain LoRA + fp16 by default).
+# Install this in the training environment; install requirements-serve.txt separately.
+# Version bounds are a starting point for T4-era Colab/Kaggle images — verify on yours.
+torch
+transformers>=4.51,<4.53
+datasets>=2.20
+peft>=0.13,<0.18
+trl>=0.20,<0.24
+accelerate>=1.0,<2
+# bitsandbytes is only needed for load_in_4bit: true (optional fallback) or 8-bit optimizers.
+bitsandbytes
+pyyaml>=6
+
+# Tests
+pytest

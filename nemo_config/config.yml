@@ -1,0 +1,17 @@
+# NeMo Guardrails configuration with the GuardJudge rails.
+# Replace the main model with the model of your application.
+models:
+  - type: main
+    engine: openai
+    model: gpt-4o-mini
+
+rails:
+  input:
+    flows:
+      - guardjudge check input
+  retrieval:
+    flows:
+      - guardjudge check retrieval
+  output:
+    flows:
+      - guardjudge check output

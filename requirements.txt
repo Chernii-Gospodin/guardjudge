@@ -1,0 +1,4 @@
+# Convenience pointer for the training environment.
+# Serving deps live in requirements-serve.txt and must be installed separately,
+# because vLLM can downgrade torch/transformers.
+-r requirements-train.txt

@@ -1,0 +1,17 @@
+define bot refuse to respond
+  "I'm sorry, I can't help with that request."
+
+define flow guardjudge check input
+  $unsafe = execute guardjudge_check(stage="input", text=$user_message)
+  if $unsafe
+    bot refuse to respond
+    stop
+
+define flow guardjudge check output
+  $unsafe = execute guardjudge_check(stage="output", text=$bot_message, context=$user_message)
+  if $unsafe
+    bot refuse to respond
+    stop
+
+define flow guardjudge check retrieval
+  execute guardjudge_filter_chunks
