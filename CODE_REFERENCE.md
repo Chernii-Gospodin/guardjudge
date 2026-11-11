@@ -66,7 +66,7 @@ Loss считается только по JSON-вердикту.
 
 `JudgeClient(base_url, model, api_key, timeout, fail_open)` — асинхронный клиент к OpenAI-совместимому API.
 Значения по умолчанию берутся из `GUARDJUDGE_BASE_URL`, `GUARDJUDGE_MODEL` и `GUARDJUDGE_FAIL_OPEN`.
-- `await judge(stage, text, context) -> Verdict`. Если сервер недоступен, по умолчанию возвращает `unsafe` (fail closed).
+- `await judge(stage, text, context) -> Verdict`. Если сервер недоступен **или ответ модели не удалось разобрать**, по умолчанию возвращает `unsafe` (fail closed).
 
 ---
 
@@ -82,6 +82,7 @@ Loss считается только по JSON-вердикту.
 - `show_example(tok, ex)`: печатает часть примера без loss (промпт) и часть с loss (вердикт).
 - `apply_overrides(cfg, ["train.epochs=1", ...])`: флаг `--set` (значения разбираются как YAML).
 - `subsample(records, n, seed)`: `max_train_samples` / `max_eval_samples`.
+- `compat_training_args(cls, kwargs, group_by_length)`: совместимость с transformers 4.x и 5.x. Группировка по длине включается через `group_by_length=True` (4.x) или `train_sampling_strategy="group_by_length"` (5.x). Неизвестные аргументы отбрасываются с предупреждением.
 - `main()`: читает YAML и токенизирует данные. Если в конфиге задан `chat_template`, сначала применяется он. С `--dry-run` на этом останавливается. Иначе загружает модель в fp32, обучает со смешанной точностью (`eval_save_every`: по эпохам или каждые N шагов; `--resume` продолжает с чекпоинта) и сохраняет чекпоинт в `save_dtype` вместе с `guardjudge.json` (конфиг и `log_history` для графиков loss). Промежуточные чекпоинты удаляются, если не задан `keep_checkpoints`.
 
 ## `scripts/evaluate.py`
@@ -101,7 +102,7 @@ Loss считается только по JSON-вердикту.
 FastAPI-сервер поверх `LocalJudge`:
 - `GET /health`, `GET /v1/models`;
 - `POST /v1/chat/completions` (OpenAI-совместимый);
-- `POST /judge {stage, text, context}` → `{verdict, category, parsed_ok, latency_s}`.
+- `POST /judge {stage, text, context}` → `{verdict, category, parsed_ok, latency_s}`. Неразобранный ответ модели даёт `unsafe` (флаг `--fail-open` меняет это), неизвестная стадия — HTTP 422.
 
 ## `scripts/serve_vllm.sh`
 

@@ -7,7 +7,7 @@ precision (fp16 on T4, bf16 on Ampere+), so a ~0.6B model fits on a 16 GB T4.
 Usage:
   python scripts/train.py --config configs/train_full.yaml
   python scripts/train.py --config configs/train_full.yaml --dry-run   # show one tokenized example
-  python scripts/train.py --config configs/train_guardrails.yaml       --set model_name=Qwen/Qwen3Guard-Gen-0.6B --set train.epochs=1   # override config values
+  python scripts/train.py --config configs/train_guardrails.yaml --set train.epochs=2  # override values
   python scripts/train.py --config ... --resume                       # continue from last checkpoint
 """
 import argparse
@@ -53,6 +53,31 @@ def resolve_precision(precision: str, cuda: bool, bf16_ok: bool) -> tuple[bool, 
         print("[warn] bf16 is not supported on this GPU; falling back to fp16.")
         return False, True
     return precision == "bf16", precision == "fp16"
+
+
+def compat_training_args(cls, kwargs: dict, group_by_length: bool) -> dict:
+    """Adapt kwargs to the installed transformers version (4.x and 5.x differ).
+
+    * length-grouped batching: `group_by_length=True` (4.x) vs
+      `train_sampling_strategy="group_by_length"` (5.x);
+    * any other argument the installed version does not know is dropped with a warning
+      instead of crashing the run.
+    """
+    import dataclasses
+
+    fields = {f.name for f in dataclasses.fields(cls)}
+    kwargs = dict(kwargs)
+    if group_by_length:
+        if "group_by_length" in fields:
+            kwargs["group_by_length"] = True
+        elif "train_sampling_strategy" in fields:
+            kwargs["train_sampling_strategy"] = "group_by_length"
+        else:
+            print("[warn] this transformers version has no length-grouped sampler; using random order")
+    for key in [k for k in kwargs if k not in fields]:
+        print(f"[warn] TrainingArguments has no {key!r} in this transformers version; ignored")
+        kwargs.pop(key)
+    return kwargs
 
 
 def show_example(tok, ex: dict) -> None:
@@ -126,7 +151,7 @@ def main() -> None:
     # "epoch" or a number of optimizer steps (more frequent saves survive Colab disconnects)
     every = t.get("eval_save_every", "epoch")
     strategy = "epoch" if every == "epoch" else "steps"
-    targs = TrainingArguments(
+    targs = TrainingArguments(**compat_training_args(TrainingArguments, dict(
         output_dir=str(ckpt_dir),
         num_train_epochs=t["epochs"],
         per_device_train_batch_size=t["per_device_batch_size"],
@@ -149,15 +174,21 @@ def main() -> None:
         bf16=use_bf16,
         optim=t.get("optim", "adamw_torch"),
         gradient_checkpointing=t["gradient_checkpointing"],
-        group_by_length=t.get("group_by_length", False),
         remove_unused_columns=False,
+        prediction_loss_only=True,  # eval needs only the loss; never gather full-vocab logits
         seed=t["seed"],
         report_to="none",
-    )
+    ), group_by_length=t.get("group_by_length", False)))
+
+    def to_dataset(examples):
+        # precomputed "length" column: the length-grouped sampler reads it instead of
+        # iterating over the whole dataset (the collator ignores it)
+        return Dataset.from_list([{**e, "length": len(e["input_ids"])} for e in examples])
+
     trainer = Trainer(
         model=model, args=targs, data_collator=collate,
-        train_dataset=Dataset.from_list(train_ex),
-        eval_dataset=Dataset.from_list(eval_ex) if eval_ex else None,
+        train_dataset=to_dataset(train_ex),
+        eval_dataset=to_dataset(eval_ex) if eval_ex else None,
     )
     resume = args.resume and ckpt_dir.is_dir() and any(ckpt_dir.glob("checkpoint-*"))
     if args.resume and not resume:

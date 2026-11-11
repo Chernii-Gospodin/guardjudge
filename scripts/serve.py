@@ -8,13 +8,14 @@ JudgeClient and `scripts/evaluate.py --backend http`. Requests are processed one
 
 Endpoints: GET /health, GET /v1/models, POST /v1/chat/completions,
 POST /judge  {"stage": "input", "text": "...", "context": null} -> {"verdict", "category", ...}
+An unparseable model answer on /judge is reported as "unsafe" (fail closed) unless --fail-open.
 """
 import argparse
 import time
 import uuid
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from guardjudge.local import LocalJudge
@@ -35,7 +36,7 @@ class JudgeRequest(BaseModel):
     context: str | None = None
 
 
-def build_app(judge: LocalJudge, served_name: str) -> FastAPI:
+def build_app(judge: LocalJudge, served_name: str, fail_open: bool = False) -> FastAPI:
     app = FastAPI(title="GuardJudge")
 
     @app.get("/health")
@@ -61,11 +62,12 @@ def build_app(judge: LocalJudge, served_name: str) -> FastAPI:
     @app.post("/judge")
     def judge_endpoint(req: JudgeRequest):
         if req.stage not in STAGES:
-            return {"error": f"stage must be one of {STAGES}"}
+            raise HTTPException(status_code=422, detail=f"stage must be one of {STAGES}")
         t0 = time.perf_counter()
         raw, _, _ = judge.generate(build_messages(req.stage, req.text, req.context))
         v = parse_verdict(raw)
-        return {"verdict": "unsafe" if v.unsafe else "safe", "category": v.category,
+        unsafe = v.unsafe if v.parsed_ok else not fail_open
+        return {"verdict": "unsafe" if unsafe else "safe", "category": v.category,
                 "parsed_ok": v.parsed_ok, "latency_s": round(time.perf_counter() - t0, 4)}
 
     return app
@@ -79,9 +81,11 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8001)
     ap.add_argument("--device", default=None)
     ap.add_argument("--dtype", default="auto", choices=["auto", "fp16", "bf16", "fp32"])
+    ap.add_argument("--fail-open", action="store_true",
+                    help="/judge: treat an unparseable answer as safe (default: unsafe)")
     a = ap.parse_args()
     judge = LocalJudge(a.model, device=a.device, dtype=a.dtype)
-    uvicorn.run(build_app(judge, a.served_name), host=a.host, port=a.port)
+    uvicorn.run(build_app(judge, a.served_name, a.fail_open), host=a.host, port=a.port)
 
 
 if __name__ == "__main__":

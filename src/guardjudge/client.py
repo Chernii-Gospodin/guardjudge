@@ -28,7 +28,11 @@ class JudgeClient:
                 # Qwen3: no <think> block. Understood by vLLM and scripts/serve.py.
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
-            return parse_verdict(resp.choices[0].message.content or "")
+            verdict = parse_verdict(resp.choices[0].message.content or "")
         except Exception:
             # Fail closed by default: if the judge is unavailable, block.
             return Verdict(unsafe=not self.fail_open, category="none", parsed_ok=False)
+        if not verdict.parsed_ok:
+            # An answer we cannot read is not a "safe" verdict: same policy as an unavailable judge.
+            return Verdict(unsafe=not self.fail_open, category="none", parsed_ok=False)
+        return verdict

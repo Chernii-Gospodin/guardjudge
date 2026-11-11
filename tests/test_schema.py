@@ -128,3 +128,51 @@ def test_chatml_renders_like_qwen3():
         add_generation_prompt=True)
     assert out == ("<|im_start|>system\nS<|im_end|>\n<|im_start|>user\nU<|im_end|>\n"
                    "<|im_start|>assistant\n<think>\n\n</think>\n\n")
+
+
+def test_client_fails_closed_on_garbage(monkeypatch):
+    pytest.importorskip("openai")
+    import asyncio
+    from types import SimpleNamespace
+
+    from guardjudge.client import JudgeClient
+
+    def fake_client(answer):
+        async def create(**kw):
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=answer))])
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+    c = JudgeClient(base_url="http://x/v1", fail_open=False)
+    c._client = fake_client("I cannot say")
+    v = asyncio.run(c.judge("input", "hi"))
+    assert v.unsafe and not v.parsed_ok
+    c.fail_open = True
+    assert not asyncio.run(c.judge("input", "hi")).unsafe
+    c._client = fake_client('{"verdict": "safe", "category": "none"}')
+    c.fail_open = False
+    assert not asyncio.run(c.judge("input", "hi")).unsafe
+
+
+def test_compat_training_args():
+    import dataclasses
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("train_script", "scripts/train.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["train_script"] = mod
+    spec.loader.exec_module(mod)
+
+    @dataclasses.dataclass
+    class V4:
+        output_dir: str = ""
+        group_by_length: bool = False
+
+    @dataclasses.dataclass
+    class V5:
+        output_dir: str = ""
+        train_sampling_strategy: str = "random"
+
+    assert mod.compat_training_args(V4, {"output_dir": "o"}, True) == {"output_dir": "o", "group_by_length": True}
+    assert mod.compat_training_args(V5, {"output_dir": "o", "bogus": 1}, True) == {
+        "output_dir": "o", "train_sampling_strategy": "group_by_length"}
