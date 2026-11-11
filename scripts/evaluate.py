@@ -28,14 +28,18 @@ Examples (before / after fine-tuning):
 """
 import argparse
 import json
+import os
 import random
 import statistics
 import time
 from collections import defaultdict
 from pathlib import Path
 
-from guardjudge.data import load_jsonl
+from guardjudge.data import load_jsonl, render_prompt
 from guardjudge.schema import build_messages, parse_verdict
+
+# less fragmentation when batch shapes vary a lot (must be set before CUDA is initialised)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 def raw_messages(rec: dict) -> list[dict]:
@@ -92,22 +96,60 @@ class LocalBackend:
         self.judge = LocalJudge(a.model, device=a.device, dtype=a.dtype, chat_template_kwargs=tmpl,
                                 chat_template=a.chat_template, max_new_tokens=a.max_new_tokens)
         self.batch_size = a.batch_size
+        self.max_batch_tokens = a.max_batch_tokens
+        self.oom_failures = 0
 
     def one(self, msgs):
         return self.judge.generate(msgs)[0]
 
+    def _prompt_len(self, msgs) -> int:
+        prompt = render_prompt(self.judge.tokenizer, msgs, self.judge.chat_template_kwargs)
+        return len(self.judge.tokenizer(prompt, add_special_tokens=False)["input_ids"])
+
+    def _make_batches(self, lengths: list[int]) -> list[list[int]]:
+        """Sort by length and pack: a batch holds at most batch_size rows and its padded size
+        (rows x longest prompt) stays under max_batch_tokens, so a few very long inputs
+        (some test rows have ~5k tokens) run in small batches instead of blowing up memory."""
+        order = sorted(range(len(lengths)), key=lengths.__getitem__)
+        batches, cur = [], []
+        for i in order:
+            width = lengths[i]  # sorted ascending -> the new row is the longest in the batch
+            if cur and (len(cur) >= self.batch_size or (len(cur) + 1) * width > self.max_batch_tokens):
+                batches.append(cur)
+                cur = []
+            cur.append(i)
+        if cur:
+            batches.append(cur)
+        return batches
+
+    def _run(self, batch_msgs: list[list[dict]]) -> list[str]:
+        """generate_batch with an OOM fallback: halve the batch until it fits."""
+        import torch
+
+        try:
+            return self.judge.generate_batch(batch_msgs)
+        except torch.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            if len(batch_msgs) == 1:
+                self.oom_failures += 1
+                print("  [warn] OOM on a single example; counted as unparsed answer", flush=True)
+                return [""]
+            mid = len(batch_msgs) // 2
+            return self._run(batch_msgs[:mid]) + self._run(batch_msgs[mid:])
+
     def many(self, all_msgs: list[list[dict]], progress: bool = True) -> list[str]:
-        # sort by length so that each batch has little padding
-        order = sorted(range(len(all_msgs)), key=lambda i: sum(len(m["content"]) for m in all_msgs[i]))
+        lengths = [self._prompt_len(m) for m in all_msgs]
+        batches = self._make_batches(lengths)
+        print(f"  prompt tokens: median {sorted(lengths)[len(lengths) // 2]}, max {max(lengths)}; "
+              f"{len(batches)} batches", flush=True)
         answers: list[str | None] = [None] * len(all_msgs)
-        t0 = time.perf_counter()
-        for start in range(0, len(order), self.batch_size):
-            idx = order[start:start + self.batch_size]
-            for i, ans in zip(idx, self.judge.generate_batch([all_msgs[i] for i in idx])):
+        t0, done = time.perf_counter(), 0
+        for n, idx in enumerate(batches):
+            for i, ans in zip(idx, self._run([all_msgs[i] for i in idx])):
                 answers[i] = ans
-            done = min(start + self.batch_size, len(order))
-            if progress and (done == len(order) or (start // self.batch_size) % 20 == 0):
-                print(f"  {done}/{len(order)}  {time.perf_counter() - t0:.0f}s", flush=True)
+            done += len(idx)
+            if progress and (n % 20 == 0 or done == len(all_msgs)):
+                print(f"  {done}/{len(all_msgs)}  {time.perf_counter() - t0:.0f}s", flush=True)
         return answers
 
 
@@ -144,7 +186,9 @@ def main() -> None:
     ap.add_argument("--controversial", choices=["unsafe", "safe"], default="unsafe",
                     help="how to count Qwen3Guard 'Controversial' answers")
     ap.add_argument("--max-new-tokens", type=int, default=32)
-    ap.add_argument("--batch-size", type=int, default=16, help="local backend: batch for quality pass")
+    ap.add_argument("--batch-size", type=int, default=16, help="local backend: max rows per batch")
+    ap.add_argument("--max-batch-tokens", type=int, default=8192,
+                    help="local backend: max rows x longest prompt per batch (long inputs -> small batches)")
     ap.add_argument("--latency-samples", type=int, default=100,
                     help="local backend: examples timed one by one (0 = skip)")
     ap.add_argument("--warmup", type=int, default=3, help="untimed warm-up calls")
@@ -197,6 +241,7 @@ def main() -> None:
     report = {"name": a.name or a.model, "model": a.model, "backend": a.backend,
               "prompt_style": a.prompt_style, "chat_template": a.chat_template, "data": a.data,
               "overall": metrics(rows),
+              "oom_skipped": getattr(backend, "oom_failures", 0),
               "by_stage": {s: metrics(r) for s, r in by_stage.items()},
               # optional metadata from data/guardrails (prepare_dataset.py)
               "by_source": group_metrics(rows, "source"),
