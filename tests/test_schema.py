@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from guardjudge.data import load_jsonl, to_prompt_completion
+from guardjudge.data import load_jsonl
 from guardjudge.schema import build_messages, format_target, parse_verdict
 
 
@@ -43,5 +43,88 @@ def test_demo_data_is_valid():
     for name in ("train", "val", "test"):
         recs = load_jsonl(f"data/demo_{name}.jsonl")
         assert recs
-        pc = to_prompt_completion(recs[0])
-        assert pc["prompt"][-1]["role"] == "user" and pc["completion"][0]["role"] == "assistant"
+        assert {r["stage"] for r in recs} <= {"input", "tool_call", "rag", "output"}
+
+
+def test_parse_llama_guard_native():
+    v = parse_verdict("\n\nunsafe\nS2")
+    assert v.unsafe and v.parsed_ok
+    assert not parse_verdict("safe").unsafe
+
+
+# --- SFT tokenization (stub tokenizer: no model download needed) ---
+
+from guardjudge.data import IGNORE_INDEX, pad_batch, tokenize_example  # noqa: E402
+
+
+class StubTokenizer:
+    """One token per character; the chat template is a simple tag format."""
+    eos_token_id = 0
+    pad_token_id = 0
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False, **kw):
+        assert tokenize is False
+        s = "".join(f"<{m['role']}>{m['content']}" for m in messages)
+        if kw.get("enable_thinking") is False:
+            s += "<nothink>"
+        return s + ("<assistant>" if add_generation_prompt else "")
+
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": [ord(c) for c in text]}
+
+
+REC = {"stage": "input", "text": "hi", "label": "unsafe", "category": "jailbreak"}
+
+
+def test_loss_only_on_verdict():
+    ex = tokenize_example(StubTokenizer(), REC, max_length=10_000)
+    target = [l for l in ex["labels"] if l != IGNORE_INDEX]
+    assert "".join(map(chr, target[:-1])) == format_target("unsafe", "jailbreak")
+    assert target[-1] == StubTokenizer.eos_token_id
+    assert len(ex["input_ids"]) == len(ex["labels"]) == len(ex["attention_mask"])
+    # labels are a suffix of input_ids
+    assert ex["input_ids"][-len(target):] == target
+
+
+def test_chat_template_kwargs_are_passed():
+    a = tokenize_example(StubTokenizer(), REC, 10_000)
+    b = tokenize_example(StubTokenizer(), REC, 10_000, {"enable_thinking": False})
+    assert len(b["input_ids"]) == len(a["input_ids"]) + len("<nothink>")
+
+
+def test_too_long_is_skipped():
+    assert tokenize_example(StubTokenizer(), REC, max_length=20) is None
+
+
+def test_pad_batch():
+    b = pad_batch([{"input_ids": [5, 6, 7], "attention_mask": [1, 1, 1], "labels": [-100, 6, 7]},
+                   {"input_ids": [5], "attention_mask": [1], "labels": [5]}], pad_token_id=0)
+    assert b["input_ids"][1] == [5, 0, 0]
+    assert b["attention_mask"][1] == [1, 0, 0]
+    assert b["labels"][1] == [5, IGNORE_INDEX, IGNORE_INDEX]
+
+
+def test_chatml_override():
+    from guardjudge.data import CHATML_NO_THINK, apply_chat_template_override
+
+    class Tok:
+        chat_template = "original"
+
+    t = Tok()
+    apply_chat_template_override(t, None)
+    assert t.chat_template == "original"
+    apply_chat_template_override(t, "chatml")
+    assert t.chat_template == CHATML_NO_THINK
+    with pytest.raises(ValueError):
+        apply_chat_template_override(t, "nope")
+
+
+def test_chatml_renders_like_qwen3():
+    jinja2 = pytest.importorskip("jinja2")
+    from guardjudge.data import CHATML_NO_THINK
+
+    out = jinja2.Template(CHATML_NO_THINK).render(
+        messages=[{"role": "system", "content": "S"}, {"role": "user", "content": "U"}],
+        add_generation_prompt=True)
+    assert out == ("<|im_start|>system\nS<|im_end|>\n<|im_start|>user\nU<|im_end|>\n"
+                   "<|im_start|>assistant\n<think>\n\n</think>\n\n")

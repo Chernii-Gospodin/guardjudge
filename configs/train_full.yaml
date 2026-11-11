@@ -1,0 +1,40 @@
+# Full fine-tuning config (all weights, no LoRA). Defaults fit a Colab/Kaggle T4 (16 GB, fp16).
+# Start values; tune on the validation split.
+#
+# model_name alternatives:
+#   Qwen/Qwen3-0.6B                 default; same backbone as Qwen3Guard-Gen-0.6B (fair baseline)
+#   Qwen/Qwen2.5-0.5B-Instruct      slightly smaller, plain chat template
+#   Qwen/Qwen3-1.7B                 better quality; full FT needs a >=24 GB GPU (does not fit a T4)
+model_name: Qwen/Qwen3-0.6B
+train_file: data/demo_train.jsonl
+eval_file: data/demo_val.jsonl
+output_dir: outputs/guardjudge-qwen3-0.6b
+
+# Extra variables for the chat template. Qwen3: disable the <think> block (we want a verdict only).
+# The same kwargs must be used at inference (saved to <output_dir>/guardjudge.json).
+chat_template_kwargs:
+  enable_thinking: false
+
+# Mixed precision: fp16 (T4/P100) | bf16 (Ampere+, auto-falls back to fp16) | fp32.
+# Master weights are always fp32.
+precision: fp16
+# dtype of the saved checkpoint (bf16 halves disk size; vLLM on T4 casts it to fp16).
+save_dtype: bf16
+# Intermediate checkpoints (<output_dir>/checkpoints, fp32 + optimizer, ~10 GB for 0.6B)
+# are deleted after training unless this is true.
+keep_checkpoints: false
+
+train:
+  epochs: 3
+  per_device_batch_size: 2
+  grad_accum_steps: 8           # effective batch 16
+  learning_rate: 1.0e-5         # full FT needs a much lower LR than LoRA
+  weight_decay: 0.01
+  lr_scheduler: cosine
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  max_length: 1024              # longer examples are skipped (logged)
+  logging_steps: 10
+  optim: adamw_torch            # adamw_bnb_8bit saves ~3.5 GB for 0.6B (needs bitsandbytes)
+  seed: 42
+  gradient_checkpointing: true

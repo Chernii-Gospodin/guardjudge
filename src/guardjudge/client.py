@@ -1,4 +1,4 @@
-"""Async client for the judge served behind an OpenAI-compatible API (vLLM / Ollama)."""
+"""Async client for the judge served behind an OpenAI-compatible API (scripts/serve.py / vLLM)."""
 from __future__ import annotations
 
 import os
@@ -24,7 +24,9 @@ class JudgeClient:
                 model=self.model,
                 messages=build_messages(stage, text, context),
                 temperature=0.0,
-                max_tokens=64,
+                max_tokens=32,
+                # Qwen3: no <think> block. Understood by vLLM and scripts/serve.py.
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             return parse_verdict(resp.choices[0].message.content or "")
         except Exception:

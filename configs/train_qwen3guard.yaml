@@ -1,0 +1,38 @@
+# Full fine-tuning of Qwen3Guard-Gen-0.6B on the team dataset: same data, prompt and
+# hyper-parameters as configs/train_guardrails.yaml (Qwen3-0.6B), only the starting weights differ.
+#
+# Qwen3Guard-Gen's own chat template wraps any conversation into a fixed "Safety: ... /
+# Categories: ..." instruction. `chat_template: chatml` replaces it with plain ChatML, which renders
+# byte-identical prompts to Qwen3-0.6B (verified), so both models are trained on exactly the same
+# token sequences. The override is saved with the fine-tuned tokenizer.
+model_name: Qwen/Qwen3Guard-Gen-0.6B
+chat_template: chatml
+train_file: data/guardrails/train.jsonl
+eval_file: data/guardrails/val.jsonl
+output_dir: outputs/guardjudge-qwen3guard-0.6b
+
+chat_template_kwargs: {}
+
+precision: fp16             # bf16 on Ampere+ GPUs
+save_dtype: bf16
+keep_checkpoints: false
+# checkpoint_dir: /content/ckpt/qwen3guard   # put fp32 checkpoints on the local disk in Colab
+# max_train_samples: 20000                   # random subset for a shorter run
+max_eval_samples: 2000
+
+train:
+  epochs: 1
+  per_device_batch_size: 4
+  grad_accum_steps: 4         # effective batch 16
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  lr_scheduler: cosine
+  warmup_ratio: 0.03
+  max_grad_norm: 1.0
+  max_length: 1024
+  group_by_length: true
+  eval_save_every: 500        # "epoch" or N optimizer steps
+  logging_steps: 50
+  optim: adamw_torch
+  seed: 42
+  gradient_checkpointing: true

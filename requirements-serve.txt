@@ -1,6 +1,5 @@
-# Serving / evaluation / NeMo Guardrails environment.
-# Install SEPARATELY from requirements-train.txt: vLLM can downgrade torch/transformers,
-# so do not install both into the same environment.
-vllm            # optional, for scripts/serve_vllm.sh
+# NeMo Guardrails / vLLM environment.
+# Install SEPARATELY from requirements-train.txt: vLLM pins its own torch/transformers.
+vllm            # optional, for scripts/serve_vllm.sh (Linux + GPU); scripts/serve.py is the light option
 openai>=1.40
 nemoguardrails

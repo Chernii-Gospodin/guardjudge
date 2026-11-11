@@ -73,13 +73,15 @@ def format_target(label: str, category: str = "none") -> str:
 _JSON_RE = re.compile(r"\{.*?\}", re.DOTALL)
 _NATIVE_RE = re.compile(r"Safety:\s*(Safe|Unsafe|Controversial)", re.IGNORECASE)
 _CAT_RE = re.compile(r"Categories?:\s*(.+)", re.IGNORECASE)
+_LLAMA_GUARD_RE = re.compile(r"\s*(safe|unsafe)\b", re.IGNORECASE)
 
 
 def parse_verdict(raw: str, controversial_is_unsafe: bool = True) -> Verdict:
     """Parse the judge answer.
 
     Understands our JSON format and the native Qwen3Guard format
-    ("Safety: Unsafe\\nCategories: ...") so that baselines can be evaluated too.
+    ("Safety: Unsafe\\nCategories: ...") and Llama Guard ("unsafe\\nS1"), so that
+    baselines can be evaluated too.
     """
     raw = raw or ""
     m = _JSON_RE.search(raw)
@@ -101,4 +103,8 @@ def parse_verdict(raw: str, controversial_is_unsafe: bool = True) -> Verdict:
         c = _CAT_RE.search(raw)
         cat = "none" if not unsafe else (c.group(1).strip().lower() if c else "harmful_content")
         return Verdict(unsafe=unsafe, category=cat)
+    lg = _LLAMA_GUARD_RE.match(raw)
+    if lg:
+        unsafe = lg.group(1).lower() == "unsafe"
+        return Verdict(unsafe=unsafe, category="harmful_content" if unsafe else "none")
     return Verdict(unsafe=False, category="none", parsed_ok=False)

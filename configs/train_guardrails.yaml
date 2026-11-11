@@ -1,0 +1,37 @@
+# Full fine-tuning of Qwen3-0.6B on the team dataset (guardrails_dataset, ~43.5k train rows).
+# Prepare the data first:  python scripts/prepare_dataset.py --src ../guardrails_dataset --out data/guardrails
+# Twin config: configs/train_qwen3guard.yaml (same everything, Qwen3Guard-Gen-0.6B weights).
+# One epoch = ~2.7k optimizer steps at effective batch 16.
+model_name: Qwen/Qwen3-0.6B
+# Plain ChatML with an empty <think> block = what Qwen3's own template renders with
+# enable_thinking=false; used for both models so their prompts are byte-identical.
+chat_template: chatml
+train_file: data/guardrails/train.jsonl
+eval_file: data/guardrails/val.jsonl
+output_dir: outputs/guardjudge-qwen3-0.6b
+
+chat_template_kwargs: {}
+
+precision: fp16             # bf16 on Ampere+ GPUs
+save_dtype: bf16
+keep_checkpoints: false
+# checkpoint_dir: /content/ckpt/qwen3        # put fp32 checkpoints on the local disk in Colab
+# max_train_samples: 20000                   # random subset for a shorter run
+max_eval_samples: 2000      # eval_loss on a fixed random 2k subset of val (faster)
+
+train:
+  epochs: 1
+  per_device_batch_size: 4
+  grad_accum_steps: 4         # effective batch 16
+  learning_rate: 1.0e-5       # full FT needs a much lower LR than LoRA
+  weight_decay: 0.01
+  lr_scheduler: cosine
+  warmup_ratio: 0.03
+  max_grad_norm: 1.0
+  max_length: 1024            # ~0.5% longest rows are skipped (logged)
+  group_by_length: true       # batches of similar length -> much less padding
+  eval_save_every: 500        # "epoch" or N optimizer steps
+  logging_steps: 50
+  optim: adamw_torch          # adamw_bnb_8bit if you run out of memory (needs bitsandbytes)
+  seed: 42
+  gradient_checkpointing: true

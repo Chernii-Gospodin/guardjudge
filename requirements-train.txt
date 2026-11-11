@@ -1,15 +1,17 @@
-# Training environment (GPU machine: Colab/Kaggle; plain LoRA + fp16 by default).
-# Install this in the training environment; install requirements-serve.txt separately.
-# Version bounds are a starting point for T4-era Colab/Kaggle images — verify on yours.
-torch
-transformers>=4.51,<4.53
+# Training + local evaluation + FastAPI server (GPU machine: Colab/Kaggle T4 or your own GPU).
+# Full fine-tuning: no peft / trl needed.
+torch>=2.6          # 2.6+ is required by transformers to resume from checkpoints
+transformers>=4.56
 datasets>=2.20
-peft>=0.13,<0.18
-trl>=0.20,<0.24
-accelerate>=1.0,<2
-# bitsandbytes is only needed for load_in_4bit: true (optional fallback) or 8-bit optimizers.
-bitsandbytes
+accelerate>=1.0
 pyyaml>=6
+# Optional: optim: adamw_bnb_8bit in the config (saves optimizer memory on T4).
+# bitsandbytes
+
+# Serving (scripts/serve.py) and HTTP evaluation
+fastapi>=0.110
+uvicorn>=0.29
+openai>=1.40
 
 # Tests
 pytest
