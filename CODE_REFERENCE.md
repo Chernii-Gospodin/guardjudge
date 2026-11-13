@@ -62,6 +62,13 @@ Loss считается только по JSON-вердикту.
 - `judge(stage, text, context=None) -> Verdict`.
 - `chat_template="chatml"` переопределяет шаблон. У дообученного чекпоинта переопределённый шаблон уже сохранён в токенизаторе.
 
+## `src/guardjudge/metrics.py` — метрики (общие для evaluate и compare)
+
+- `binary_metrics(rows)`: tp/fp/fn/tn, accuracy, precision, recall, F1, FPR, parse_fail, задержка p50/p95.
+- `group_metrics(rows, key)`: `binary_metrics` по `source` или `language`.
+- `recall_by_category(rows)`: доля пойманных атак в каждом семействе (бинарно, категорию ответа не проверяет).
+- `category_metrics(rows, known)`: многоклассовая оценка, классы `none` + категории атак. Возвращает `category_accuracy_on_detected` (правильная категория среди пойманных атак), `accuracy`, `macro_f1`, `per_class` (P/R/F1/support) и `confusion[gold][pred]`. Ответ «unsafe» без категории или с неизвестной категорией считается классом `unsafe_unspecified`.
+
 ## `src/guardjudge/client.py` — клиент к серверу
 
 `JudgeClient(base_url, model, api_key, timeout, fail_open)` — асинхронный клиент к OpenAI-совместимому API.
@@ -91,13 +98,13 @@ Loss считается только по JSON-вердикту.
 
 - `LocalBackend` (LocalJudge: пакетный проход для качества и поштучные замеры задержки на `--latency-samples` примерах) и `HttpBackend` (OpenAI-совместимый сервер, задержка каждого запроса).
 - `raw_messages(rec)`: промпт без нашей инструкции, для guard-моделей со своим шаблоном (`--prompt-style raw`).
-- `metrics(rows)`: tp/fp/fn/tn, accuracy, precision, recall, F1, FPR, parse_fail, задержка p50/p95.
-- `group_metrics(rows, key)`: те же метрики по `source` или `language`.
+- Метрики берёт из `guardjudge.metrics`. В отчёт пишет `overall`, `by_stage`, `by_source`, `by_language`, `recall_by_category` и `category_metrics` (последнее только для `--prompt-style judge`).
 - Флаги: `--name` (подпись в отчётах), `--limit N` (случайная подвыборка), `--batch-size`, `--latency-samples`, `--chat-template chatml`, `--controversial unsafe|safe`, `--warmup`, `--save-predictions`.
 
 ## `scripts/compare.py`
 
-- `build(reports) -> str`: Markdown-таблицы по нескольким отчётам `evaluate.py`: в целом (P/R/F1/FPR/задержка), F1 по источникам и языкам, recall по категориям атак.
+- `build(reports) -> str`: Markdown-таблицы по нескольким отчётам `evaluate.py`: в целом (P/R/F1/FPR/задержка), F1 по источникам и языкам, доля пойманных атак по семействам, качество категорий и матрица ошибок по каждой модели.
+- `get_category_metrics(report)`: пересчитывает метрики категорий из `predictions` (работает и для старых отчётов). Для `prompt_style=raw` возвращает `None`.
 
 ## `scripts/serve.py`
 

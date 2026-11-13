@@ -30,13 +30,13 @@ import argparse
 import json
 import os
 import random
-import statistics
 import time
 from collections import defaultdict
 from pathlib import Path
 
 from guardjudge.data import load_jsonl, render_prompt
-from guardjudge.schema import build_messages, parse_verdict
+from guardjudge.metrics import binary_metrics, category_metrics, group_metrics, recall_by_category
+from guardjudge.schema import CATEGORIES, build_messages, parse_verdict
 
 # less fragmentation when batch shapes vary a lot (must be set before CUDA is initialised)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -50,42 +50,6 @@ def raw_messages(rec: dict) -> list[dict]:
     if rec.get("context"):  # structured input: show the guard the whole thing
         text = f"{rec['context']}\n\n{text}"
     return [{"role": "user", "content": text}]
-
-
-def pct(values: list[float], q: float) -> float:
-    if not values:
-        return 0.0
-    values = sorted(values)
-    return values[min(len(values) - 1, int(round(q * (len(values) - 1))))]
-
-
-def metrics(rows: list[dict]) -> dict:
-    tp = sum(r["pred"] and r["gold"] for r in rows)
-    fp = sum(r["pred"] and not r["gold"] for r in rows)
-    fn = sum((not r["pred"]) and r["gold"] for r in rows)
-    tn = sum((not r["pred"]) and (not r["gold"]) for r in rows)
-    prec = tp / (tp + fp) if tp + fp else 0.0
-    rec = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
-    lat = [r["latency"] for r in rows if r.get("latency") is not None]
-    return {
-        "n": len(rows), "tp": tp, "fp": fp, "fn": fn, "tn": tn,
-        "accuracy": round((tp + tn) / len(rows), 4) if rows else 0.0,
-        "precision": round(prec, 4), "recall": round(rec, 4), "f1": round(f1, 4),
-        "fpr": round(fp / (fp + tn), 4) if fp + tn else 0.0,
-        "parse_fail": sum(not r["parsed_ok"] for r in rows),
-        "latency_n": len(lat),
-        "latency_p50_s": round(statistics.median(lat), 4) if lat else None,
-        "latency_p95_s": round(pct(lat, 0.95), 4) if lat else None,
-    }
-
-
-def group_metrics(rows: list[dict], key: str) -> dict:
-    groups = defaultdict(list)
-    for r in rows:
-        if r.get(key):
-            groups[r[key]].append(r)
-    return {g: metrics(rs) for g, rs in sorted(groups.items())}
 
 
 class LocalBackend:
@@ -226,7 +190,7 @@ def main() -> None:
             answers.append(backend.one(msgs))
             latencies[i] = time.perf_counter() - t0
 
-    rows, by_stage, by_cat = [], defaultdict(list), defaultdict(list)
+    rows, by_stage = [], defaultdict(list)
     for rec, raw, lat in zip(records, answers, latencies):
         v = parse_verdict(raw, controversial_is_unsafe=a.controversial == "unsafe")
         row = {"id": rec.get("id"), "source": rec.get("source"), "language": rec.get("language"),
@@ -235,20 +199,21 @@ def main() -> None:
                "parsed_ok": v.parsed_ok, "latency": lat, "raw": raw, "text": rec["text"]}
         rows.append(row)
         by_stage[rec["stage"]].append(row)
-        if row["gold"]:
-            by_cat[row["category"]].append(row)
 
     report = {"name": a.name or a.model, "model": a.model, "backend": a.backend,
               "prompt_style": a.prompt_style, "chat_template": a.chat_template, "data": a.data,
-              "overall": metrics(rows),
+              "overall": binary_metrics(rows),
               "oom_skipped": getattr(backend, "oom_failures", 0),
-              "by_stage": {s: metrics(r) for s, r in by_stage.items()},
+              "by_stage": {s: binary_metrics(r) for s, r in by_stage.items()},
               # optional metadata from data/guardrails (prepare_dataset.py)
               "by_source": group_metrics(rows, "source"),
               "by_language": group_metrics(rows, "language"),
-              # detection rate per attack family (only unsafe examples)
-              "recall_by_category": {c: round(sum(x["pred"] for x in r) / len(r), 4)
-                                     for c, r in by_cat.items()}}
+              # binary detection rate per attack family (only unsafe examples)
+              "recall_by_category": recall_by_category(rows),
+              # did the judge also name the right category? Only for our JSON format: native guard
+              # formats (Qwen3Guard, Llama Guard) use their own taxonomy.
+              "category_metrics": (category_metrics(rows, known=set(CATEGORIES) - {"none"})
+                                   if a.prompt_style == "judge" else None)}
 
     def fmt(x):
         return f"{x:>9.3f}" if x is not None else f"{'-':>9}"
@@ -263,6 +228,12 @@ def main() -> None:
             print(key + ":", {g: f"F1={m['f1']:.3f} FPR={m['fpr']:.3f} n={m['n']}"
                               for g, m in report[key].items()})
     print("recall by attack category:", report["recall_by_category"])
+    cm = report["category_metrics"]
+    if cm:
+        print(f"category: macro-F1={cm['macro_f1']:.3f} accuracy={cm['accuracy']:.3f} "
+              f"correct category on detected attacks={cm['category_accuracy_on_detected']} "
+              f"(n={cm['detected_n']})")
+        print("confusion (gold -> predicted):", cm["confusion"])
 
     if a.out:
         if a.save_predictions:

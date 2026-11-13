@@ -11,6 +11,7 @@ guardjudge/
 │   ├── schema.py            промпт судьи, целевой JSON, разбор ответа
 │   ├── data.py              JSONL, токенизация для обучения, ChatML-шаблон
 │   ├── local.py             LocalJudge — модель в процессе (Transformers)
+│   ├── metrics.py           метрики: бинарный вердикт и категории
 │   └── client.py            JudgeClient — клиент к серверу судьи
 ├── scripts/                 точки входа (запускаются из командной строки)
 │   ├── prepare_dataset.py   guardrails_dataset → data/guardrails
@@ -54,8 +55,9 @@ guardjudge/
 | `local.py` | **`LocalJudge`** | модель в памяти: `generate()` (один запрос), `generate_batch()` (пакет), `judge()` (сразу вердикт) |
 | `client.py` | **`JudgeClient`** | асинхронный HTTP-клиент к серверу судьи; если сервер недоступен, блокирует запрос (fail closed) |
 | `serve.py` | `build_app()` → FastAPI | `/v1/chat/completions` (OpenAI-совместимый), `/judge`, `/health` |
+| `metrics.py` | `binary_metrics()`, `group_metrics()` | P / R / F1 / FPR / задержка, в целом и по группам |
+| | `category_metrics()` | правильно ли названа категория атаки: точность, macro-F1, матрица ошибок |
 | `evaluate.py` | `LocalBackend`, `HttpBackend` | откуда брать ответы модели: в процессе или по HTTP |
-| | `metrics()`, `group_metrics()` | P / R / F1 / FPR / задержка, в целом и по группам |
 | `train.py` | `main()` | конфиг → токенизация → `Trainer` → сохранение чекпоинта |
 | `nemo_config/actions.py` | `guardjudge_check`, `guardjudge_filter_chunks` | действия NeMo: проверить фрагмент, отфильтровать RAG-чанки |
 
@@ -68,6 +70,7 @@ flowchart LR
         data["data.py<br/>load_jsonl, render_prompt,<br/>tokenize_example, ChatML"]
         local["local.py<br/>LocalJudge"]
         client["client.py<br/>JudgeClient"]
+        metrics["metrics.py<br/>binary_metrics,<br/>category_metrics"]
     end
     data --> schema
     local --> data
@@ -78,7 +81,9 @@ flowchart LR
     evaluate["scripts/evaluate.py"] --> local
     evaluate --> schema
     serve["scripts/serve.py"] --> local
-    compare["scripts/compare.py"] -. читает JSON .-> evaluate
+    evaluate --> metrics
+    compare["scripts/compare.py"] --> metrics
+    compare -. читает JSON .-> evaluate
     actions["nemo_config/actions.py"] --> client
     client -. HTTP .-> serve
     notebook["notebooks/train_colab.ipynb"] -. вызывает .-> train

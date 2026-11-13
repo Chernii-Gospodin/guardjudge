@@ -204,3 +204,32 @@ def test_verdict_only_loss_matches_stock_loss():
     s, n = mod.verdict_only_loss(model, ids, att, labels)
     assert int(n) == int((labels[:, 1:] != IGNORE_INDEX).sum())
     assert torch.allclose(stock, s / n, atol=1e-6)
+
+
+def test_category_metrics():
+    from guardjudge.metrics import UNSPECIFIED, binary_metrics, category_metrics
+
+    def row(gold_cat, pred, pred_cat):
+        return {"gold": gold_cat != "none", "category": gold_cat, "pred": pred,
+                "pred_category": pred_cat, "parsed_ok": True, "latency": None}
+
+    rows = [
+        row("prompt_injection", True, "prompt_injection"),  # detected, right category
+        row("prompt_injection", True, "harmful_content"),   # detected, wrong category
+        row("harmful_content", True, "harmful_content"),    # detected, right category
+        row("harmful_content", False, "none"),              # missed
+        row("none", False, "none"),                          # correct safe
+        row("none", True, "none"),                           # false alarm, no category
+    ]
+    b = binary_metrics(rows)
+    assert (b["tp"], b["fp"], b["fn"], b["tn"]) == (3, 1, 1, 1)
+    cm = category_metrics(rows, known={"prompt_injection", "harmful_content"})
+    assert cm["classes"] == ["none", "harmful_content", "prompt_injection"]
+    assert cm["detected_n"] == 3 and cm["category_accuracy_on_detected"] == round(2 / 3, 4)
+    assert cm["accuracy"] == 0.5  # rows 1, 3, 5
+    assert cm["confusion"]["none"] == {"none": 1, UNSPECIFIED: 1}
+    assert cm["confusion"]["prompt_injection"] == {"prompt_injection": 1, "harmful_content": 1}
+    # harmful_content: tp=1, fp=1 (the PI row), fn=1 (the miss) -> P=R=F1=0.5
+    assert cm["per_class"]["harmful_content"]["f1"] == 0.5
+    assert cm["per_class"]["prompt_injection"] == {"precision": 1.0, "recall": 0.5, "f1": 0.6667, "support": 2}
+    assert UNSPECIFIED in cm["extra_predicted"]
