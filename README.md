@@ -85,6 +85,13 @@ python scripts/compare.py results/*.json --out results/summary.md
 - **категория** (только для нашего JSON-формата): доля атак с правильно названной категорией среди пойманных («блокируя, судья верно называет причину?»), точность и macro-F1 по классам `none` + категории атак, матрица ошибок. Для родных форматов guard-моделей (Qwen3Guard, Llama Guard) не считается: у них своя таксономия.
 
 `compare.py` пересчитывает метрики категорий из сохранённых предсказаний, поэтому они появятся и в старых отчётах.
+Графики по категориям (детекция по семействам, P/R/F1 по классам, матрицы ошибок):
+
+```bash
+python scripts/plot_results.py results/*.json --out results/plots
+```
+
+В матрице ошибок класс `none` означает safe: в столбце `none` у строк атак — пропущенные атаки, в строке `none` вне столбца `none` — ложные срабатывания.
 Качество считается пакетной генерацией (`--batch-size`). Задержка замеряется отдельно, по одному запросу,
 на `--latency-samples` примерах, как у реального гардрейла.
 `--limit N` оценивает случайную подвыборку, `--save-predictions` сохраняет ответы модели по каждому примеру.
@@ -141,6 +148,7 @@ scripts/prepare_dataset.py     guardrails_dataset -> data/guardrails
 scripts/train.py               full fine-tuning (Trainer)
 scripts/evaluate.py            метрики качества и задержки
 scripts/compare.py             сводная таблица по нескольким оценкам
+scripts/plot_results.py        графики по категориям и матрицы ошибок
 scripts/serve.py               FastAPI-сервер судьи; serve_vllm.sh — vLLM
 nemo_config/                   рельсы NeMo Guardrails
 tests/                         pytest

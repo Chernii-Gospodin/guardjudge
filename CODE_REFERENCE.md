@@ -106,6 +106,13 @@ Loss считается только по JSON-вердикту.
 - `build(reports) -> str`: Markdown-таблицы по нескольким отчётам `evaluate.py`: в целом (P/R/F1/FPR/задержка), F1 по источникам и языкам, доля пойманных атак по семействам, качество категорий и матрица ошибок по каждой модели.
 - `get_category_metrics(report)`: пересчитывает метрики категорий из `predictions` (работает и для старых отчётов). Для `prompt_style=raw` возвращает `None`.
 
+## `scripts/plot_results.py`
+
+Графики по отчётам `evaluate.py`, метрики пересчитываются из `predictions`:
+- `plot_detection()` → `category_detection.png`: доля пойманных атак по семействам, все модели.
+- `plot_prf()` → `category_prf.png`: precision / recall / F1 по классам `none` + категории, только модели в JSON-формате.
+- `plot_confusions()` → `confusion_<i>_<имя>.png`: матрица ошибок, нормированная по строке (в скобках количество).
+
 ## `scripts/serve.py`
 
 FastAPI-сервер поверх `LocalJudge`:

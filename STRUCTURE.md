@@ -18,6 +18,7 @@ guardjudge/
 │   ├── train.py             полное дообучение
 │   ├── evaluate.py          метрики качества и задержки
 │   ├── compare.py           сводная таблица по нескольким оценкам
+│   ├── plot_results.py      графики по категориям, матрицы ошибок
 │   ├── serve.py             FastAPI-сервер судьи
 │   └── serve_vllm.sh        сервер на vLLM (Linux + GPU)
 ├── configs/                 YAML-конфиги обучения
