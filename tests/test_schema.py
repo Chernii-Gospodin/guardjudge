@@ -176,3 +176,31 @@ def test_compat_training_args():
     assert mod.compat_training_args(V4, {"output_dir": "o"}, True) == {"output_dir": "o", "group_by_length": True}
     assert mod.compat_training_args(V5, {"output_dir": "o", "bogus": 1}, True) == {
         "output_dir": "o", "train_sampling_strategy": "group_by_length"}
+
+
+def test_verdict_only_loss_matches_stock_loss():
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("train_script", "scripts/train.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["train_script"] = mod
+    spec.loader.exec_module(mod)
+
+    torch.manual_seed(0)
+    cfg = transformers.Qwen3Config(vocab_size=97, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+                                   num_attention_heads=4, num_key_value_heads=2, head_dim=8)
+    model = transformers.AutoModelForCausalLM.from_config(cfg)
+    ids = torch.randint(0, 97, (3, 12))
+    att = torch.ones_like(ids)
+    att[2, 9:] = 0  # padded row
+    labels = torch.full_like(ids, IGNORE_INDEX)
+    labels[0, 8:] = ids[0, 8:]
+    labels[1, 5:] = ids[1, 5:]
+    labels[2, 6:9] = ids[2, 6:9]
+    stock = model(input_ids=ids, attention_mask=att, labels=labels).loss
+    s, n = mod.verdict_only_loss(model, ids, att, labels)
+    assert int(n) == int((labels[:, 1:] != IGNORE_INDEX).sum())
+    assert torch.allclose(stock, s / n, atol=1e-6)

@@ -82,6 +82,8 @@ Loss считается только по JSON-вердикту.
 - `show_example(tok, ex)`: печатает часть примера без loss (промпт) и часть с loss (вердикт).
 - `apply_overrides(cfg, ["train.epochs=1", ...])`: флаг `--set` (значения разбираются как YAML).
 - `subsample(records, n, seed)`: `max_train_samples` / `max_eval_samples`.
+- `verdict_only_loss(model, input_ids, attention_mask, labels) -> (sum, n)`: loss только по токенам вердикта. Скрытые состояния проходят через `lm_head` только на целевых позициях, полные логиты по словарю (batch × seq × 152k) не создаются. Значение и градиенты те же, что у стандартного loss. На батче 4 × 1024 для Qwen3-0.6B пик памяти 1.7 ГиБ вместо 7.2 ГиБ.
+- `make_trainer_class(Trainer)` → `VerdictLossTrainer`: `compute_loss` на основе `verdict_only_loss` с той же нормировкой при накоплении градиентов, что у стандартного Trainer (проверено: одинаковые веса после шагов в transformers 4.57 и 5.22).
 - `compat_training_args(cls, kwargs, group_by_length)`: совместимость с transformers 4.x и 5.x. Группировка по длине включается через `group_by_length=True` (4.x) или `train_sampling_strategy="group_by_length"` (5.x). Неизвестные аргументы отбрасываются с предупреждением.
 - `main()`: читает YAML и токенизирует данные. Если в конфиге задан `chat_template`, сначала применяется он. С `--dry-run` на этом останавливается. Иначе загружает модель в fp32, обучает со смешанной точностью (`eval_save_every`: по эпохам или каждые N шагов; `--resume` продолжает с чекпоинта) и сохраняет чекпоинт в `save_dtype` вместе с `guardjudge.json` (конфиг и `log_history` для графиков loss). Промежуточные чекпоинты удаляются, если не задан `keep_checkpoints`.
 

@@ -16,7 +16,7 @@
 1. Промпт судьи (`schema.build_messages`) прогоняется через chat template самой модели (`data.render_prompt`).
 2. После него дописывается целевой JSON-вердикт и EOS.
 3. Loss считается **только по токенам вердикта**: метки промпта равны -100 (`data.tokenize_example`).
-4. Обычный `transformers.Trainer`, без TRL. Лучший чекпоинт выбирается по `eval_loss`.
+4. `transformers.Trainer` без TRL, с одной заменой: логиты по словарю считаются только на позициях вердикта, а не на всех ~1000 токенах промпта (`verdict_only_loss`). Loss и градиенты те же, но памяти нужно в ~4 раза меньше, поэтому обучение 0.6B помещается в T4. Лучший чекпоинт выбирается по `eval_loss`.
 5. На инференсе используется тот же `render_prompt`, поэтому модель видит ровно такой же текст, как при обучении.
 
 Чтобы убедиться, что промпт и маска собраны правильно, перед обучением запустите `python scripts/train.py --dry-run`.
@@ -61,7 +61,7 @@ python scripts/train.py --config configs/train_qwen3guard.yaml             # Qwe
 
 Значения конфига можно переопределить без правки файла: `--set train.epochs=2 --set precision=bf16`.
 `--resume` продолжает обучение с последнего чекпоинта (нужен torch ≥ 2.6).
-Если не хватает памяти: `train.per_device_batch_size=2` и `train.grad_accum_steps=8` или `optim: adamw_bnb_8bit`.
+Батч обучения задаётся в конфиге (`train.per_device_batch_size`, `train.grad_accum_steps`), в ноутбуке — через `TRAIN_BATCH` / `GRAD_ACCUM`. Если не хватает памяти: `train.per_device_batch_size=2` и `train.grad_accum_steps=8` или `optim: adamw_bnb_8bit`.
 
 **Зачем ChatML-шаблон.** Родной шаблон Qwen3Guard-Gen заворачивает любой диалог в свою инструкцию
 («ответь `Safety: ...` / `Categories: ...`»). При дообучении на наш JSON эта инструкция противоречила бы
@@ -147,7 +147,7 @@ tests/                         pytest
 
 ## Что проверено
 
-- `pytest` (16 тестов) проходит на transformers 4.57 и 5.22: разбор вердиктов, формат данных, маска loss, паддинг, fail closed клиента, совместимость `TrainingArguments`.
+- `pytest` (17 тестов) проходит на transformers 4.57 и 5.22: разбор вердиктов, формат данных, маска loss, паддинг, fail closed клиента, совместимость `TrainingArguments`, совпадение `verdict_only_loss` со стандартным loss.
 - Обучение (включая `--resume`), оценка, сервер, `JudgeClient` и весь ноутбук прогнаны на transformers 5.22 + torch 2.15 (как в Colab) и на 4.57 + torch 2.5.
 - `--dry-run` с токенизатором Qwen3-0.6B: промпт рендерится с пустым `<think>`-блоком, loss считается только по JSON и `<|im_end|>`.
 - Полный цикл «обучение → сохранение → оценка → FastAPI-сервер → `JudgeClient`» на маленьких моделях (tiny-Qwen3, SmolLM2-135M на GPU 4 ГБ). Модель выучивает формат ответа: 0 неразобранных ответов, loss падает с 0.68 до 0.04.

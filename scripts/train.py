@@ -80,6 +80,49 @@ def compat_training_args(cls, kwargs: dict, group_by_length: bool) -> dict:
     return kwargs
 
 
+def verdict_only_loss(model, input_ids, attention_mask, labels):
+    """Causal-LM loss computed only where labels != -100, without materialising full logits.
+
+    The stock forward pass projects EVERY position onto the ~152k-token vocabulary
+    (batch x seq x vocab floats, ~2.5 GB per copy for 4 x 1024 tokens) and then discards all but
+    the ~15 verdict positions. Here the backbone produces hidden states, only the target
+    positions go through lm_head. Same loss value, a fraction of the memory, ~25% less compute
+    for a 0.6B model (lm_head is ~1/4 of its parameters).
+    Returns (sum of token losses, number of target tokens).
+    """
+    import torch.nn.functional as F
+
+    hidden = model.base_model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+    shift_labels = labels[:, 1:]
+    mask = shift_labels != IGNORE_INDEX
+    logits = model.get_output_embeddings()(hidden[:, :-1][mask]).float()
+    loss_sum = F.cross_entropy(logits, shift_labels[mask], reduction="sum")
+    return loss_sum, mask.sum()
+
+
+def make_trainer_class(Trainer):
+    class VerdictLossTrainer(Trainer):
+        """Trainer whose loss uses verdict_only_loss, normalised exactly like the stock one."""
+
+        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None, **kwargs):
+            core = getattr(model, "module", model)  # unwrap DataParallel/DDP if present
+            with self.accelerator.autocast():  # the stock path gets autocast via a patched forward()
+                loss_sum, n_tokens = verdict_only_loss(core, inputs["input_ids"], inputs["attention_mask"],
+                                                       inputs["labels"])
+            if self.model_accepts_loss_kwargs and num_items_in_batch is not None:
+                # Trainer will NOT divide by grad-accumulation steps: normalise by the target-token
+                # count of the whole accumulated batch (what the stock loss does).
+                if hasattr(num_items_in_batch, "to"):
+                    num_items_in_batch = num_items_in_batch.to(loss_sum.device)
+                loss = loss_sum / num_items_in_batch
+            else:
+                # Trainer divides by grad-accumulation steps itself: return the per-batch mean.
+                loss = loss_sum / n_tokens.clamp(min=1)
+            return (loss, {"loss": loss}) if return_outputs else loss
+
+    return VerdictLossTrainer
+
+
 def show_example(tok, ex: dict) -> None:
     ids, labels = ex["input_ids"], ex["labels"]
     start = next(i for i, l in enumerate(labels) if l != IGNORE_INDEX)
@@ -185,7 +228,7 @@ def main() -> None:
         # iterating over the whole dataset (the collator ignores it)
         return Dataset.from_list([{**e, "length": len(e["input_ids"])} for e in examples])
 
-    trainer = Trainer(
+    trainer = make_trainer_class(Trainer)(
         model=model, args=targs, data_collator=collate,
         train_dataset=to_dataset(train_ex),
         eval_dataset=to_dataset(eval_ex) if eval_ex else None,
