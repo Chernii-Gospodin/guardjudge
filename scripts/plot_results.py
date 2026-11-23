@@ -1,4 +1,4 @@
-"""Per-category plots from evaluate.py reports.
+"""Per-category / per-group plots from evaluate.py reports (every bar is labelled with its value).
 
   python scripts/plot_results.py results/*.json --out results/plots
 
@@ -6,6 +6,8 @@ Writes:
   category_detection.png  share of attacks caught per attack family (binary verdict), all models
   category_prf.png        precision / recall / F1 per class (none + attack categories), judge-format models
   confusion_<n>.png       row-normalised confusion matrix (gold -> predicted class) per judge-format model
+  f1_by_language.png      binary F1 (and FPR) per language, all models
+  f1_by_source.png        binary F1 (and FPR) per data source, all models
 
 Category-level scores are recomputed from saved predictions (evaluate.py --save-predictions).
 Native guard formats (Qwen3Guard, Llama Guard) use their own taxonomy: they appear only in the
@@ -22,7 +24,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from guardjudge.metrics import UNSPECIFIED, category_metrics, recall_by_category  # noqa: E402
+from guardjudge.metrics import (UNSPECIFIED, category_metrics, group_metrics,  # noqa: E402
+                                recall_by_category)
 from guardjudge.schema import CATEGORIES  # noqa: E402
 
 KNOWN = set(CATEGORIES) - {"none"}
@@ -33,14 +36,17 @@ def class_order(classes):
 
 
 def bars(ax, groups, series, ylabel, title):
-    """Grouped bars: one group per x label, one bar per series (model)."""
+    """Grouped bars: one group per x label, one bar per series (model); every bar gets its value.
+    With many models the labels are written vertically so that they do not overlap."""
     x = np.arange(len(groups))
     w = 0.8 / max(len(series), 1)
+    vertical = len(series) >= 4
     for i, (name, vals) in enumerate(series):
         b = ax.bar(x + i * w - 0.4 + w / 2, vals, w, label=name)
-        ax.bar_label(b, fmt="%.2f", fontsize=7, padding=1)
+        ax.bar_label(b, fmt="%.2f", fontsize=6.5 if vertical else 7.5, padding=2,
+                     rotation=90 if vertical else 0)
     ax.set_xticks(x, groups)
-    ax.set_ylim(0, 1.12)
+    ax.set_ylim(0, 1.22 if vertical else 1.12)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(axis="y", alpha=0.3)
@@ -131,16 +137,47 @@ def plot_confusions(cms, out: Path) -> list[Path]:
     return paths
 
 
+def plot_groups(reports, key: str, out: Path, min_n: int = 30) -> Path | None:
+    """Binary F1 (top) and FPR (bottom) per group (language / source); groups smaller than min_n
+    examples are left out (their F1 is noise)."""
+    per = [(r["name"], group_metrics(r["predictions"], key) if r.get("predictions") else r.get(f"by_{key}", {}))
+           for r in reports]
+    sizes = {}
+    for _, d in per:
+        for g, m in d.items():
+            sizes[g] = max(sizes.get(g, 0), m["n"])
+    groups = sorted((g for g, n in sizes.items() if n >= min_n), key=lambda g: -sizes[g])
+    if not groups:
+        return None
+    labels = [f"{g}\n(n={sizes[g]})" for g in groups]
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(8, 1.9 * len(groups) * max(1, len(per) / 3) + 2), 8.5))
+    title = {"language": "языкам", "source": "источникам данных"}.get(key, key)
+    bars(ax1, labels, [(n, [d.get(g, {}).get("f1", 0) for g in groups]) for n, d in per],
+         "F1", f"F1 по {title} (unsafe = положительный класс)")
+    fpr_series = [(n, [d.get(g, {}).get("fpr", 0) for g in groups]) for n, d in per]
+    bars(ax2, labels, fpr_series, "FPR", f"Доля ложных срабатываний (FPR) по {title} — меньше лучше")
+    top = max((v for _, vals in fpr_series for v in vals), default=0)
+    ax2.set_ylim(0, max(0.05, top * 1.35))  # FPR is small: zoom in so the bars are readable
+    ax2.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2)
+    fig.tight_layout()
+    path = out / f"f1_by_{key}.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("reports", nargs="+")
     ap.add_argument("--out", default="results/plots")
+    ap.add_argument("--min-group", type=int, default=30, help="min examples for a language/source bar group")
     a = ap.parse_args()
     reports = [json.loads(Path(p).read_text(encoding="utf-8")) for p in a.reports if Path(p).is_file()]
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     cms = judge_metrics(reports)
-    written = [plot_detection(reports, out), plot_prf(cms, out), *plot_confusions(cms, out)]
+    written = [plot_detection(reports, out), plot_prf(cms, out), *plot_confusions(cms, out),
+               plot_groups(reports, "language", out, a.min_group), plot_groups(reports, "source", out, a.min_group)]
     for p in written:
         if p:
             print(p)
