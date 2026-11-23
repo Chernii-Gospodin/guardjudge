@@ -14,7 +14,7 @@ import argparse
 import json
 from pathlib import Path
 
-from guardjudge.metrics import category_metrics
+from guardjudge.metrics import binary_metrics, category_metrics, group_metrics, recall_by_category
 from guardjudge.schema import CATEGORIES
 
 
@@ -37,19 +37,21 @@ def category_section(reports: list[dict]) -> list[str]:
     if not classes:
         return []
     lines = ["", "## Category (does the judge name the right attack family?)", "",
-             "*correct cat.* — among attacks the judge flagged, share with the right category; "
-             "*accuracy / macro-F1* — classes `none` + attack categories. "
+             "*correct cat.* — among attacks the judge flagged, share with the right category. "
+             "Classes = `none` + attack categories: *macro-F1* — plain mean over classes, "
+             "*weighted-F1* — weighted by class size, *micro-F1* — pooled (= accuracy). "
              "Native guard formats use their own taxonomy and are not scored (—).", "",
-             "| model | detected | correct cat. | accuracy | macro-F1 | "
+             "| model | detected | correct cat. | **macro-F1** | weighted-F1 | micro-F1 | "
              + " | ".join(f"F1 {c}" for c in classes) + " |",
-             "|---|---|---|---|---|" + "---|" * len(classes)]
+             "|---|---|---|---|---|---|" + "---|" * len(classes)]
     for r, cm in cms:
         if not cm:
-            lines.append(f"| {r['name']} | " + " | ".join(["—"] * (4 + len(classes))) + " |")
+            lines.append(f"| {r['name']} | " + " | ".join(["—"] * (5 + len(classes))) + " |")
             continue
         per = [f(cm["per_class"][c]["f1"]) if c in cm["per_class"] else "-" for c in classes]
         lines.append(f"| {r['name']} | {cm['detected_n']} | {f(cm['category_accuracy_on_detected'])} | "
-                     f"{f(cm['accuracy'])} | **{f(cm['macro_f1'])}** | " + " | ".join(per) + " |")
+                     f"**{f(cm['macro_f1'])}** | {f(cm.get('weighted_f1'))} | {f(cm.get('micro_f1'))} | "
+                     + " | ".join(per) + " |")
     for r, cm in cms:
         if not cm:
             continue
@@ -61,14 +63,30 @@ def category_section(reports: list[dict]) -> list[str]:
     return lines
 
 
+def refresh(r: dict) -> dict:
+    """Recompute binary metrics from saved predictions, so older reports get the newer fields."""
+    if not r.get("predictions"):
+        return r
+    preds = r["predictions"]
+    return {**r, "overall": binary_metrics(preds), "by_source": group_metrics(preds, "source"),
+            "by_language": group_metrics(preds, "language"), "recall_by_category": recall_by_category(preds)}
+
+
 def build(reports: list[dict]) -> str:
-    lines = ["## Overall", "",
-             "| model | n | precision | recall | F1 | FPR | parse fail | p50, s | p95, s |",
-             "|---|---|---|---|---|---|---|---|---|"]
+    reports = [refresh(r) for r in reports]
+    lines = ["## Overall (safe / unsafe decision)", "",
+             "*F1* — unsafe as the positive class (main guardrail score); *F1 safe* — safe as the positive "
+             "class; *macro* — mean of both; *weighted* — weighted by class size; "
+             "*micro* — pooled over both classes (= accuracy).", "",
+             "| model | n | precision | recall | **F1** | F1 safe | macro-F1 | weighted-F1 | micro-F1 | FPR "
+             "| parse fail | p50, s | p95, s |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in reports:
         m = r["overall"]
         lines.append(f"| {r['name']} | {m['n']} | {f(m['precision'])} | {f(m['recall'])} | **{f(m['f1'])}** "
-                     f"| {f(m['fpr'])} | {m['parse_fail']} | {f(m['latency_p50_s'])} | {f(m['latency_p95_s'])} |")
+                     f"| {f(m.get('f1_safe'))} | {f(m.get('macro_f1'))} | {f(m.get('weighted_f1'))} "
+                     f"| {f(m.get('micro_f1'))} | {f(m['fpr'])} | {m['parse_fail']} "
+                     f"| {f(m['latency_p50_s'])} | {f(m['latency_p95_s'])} |")
 
     for key, title in (("by_source", "F1 by source"), ("by_language", "F1 by language"),
                        ("recall_by_category", "Detection rate (binary recall) by attack family")):

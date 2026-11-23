@@ -233,3 +233,36 @@ def test_category_metrics():
     assert cm["per_class"]["harmful_content"]["f1"] == 0.5
     assert cm["per_class"]["prompt_injection"] == {"precision": 1.0, "recall": 0.5, "f1": 0.6667, "support": 2}
     assert UNSPECIFIED in cm["extra_predicted"]
+
+
+def test_f1_variants_match_sklearn():
+    sk = pytest.importorskip("sklearn.metrics")
+    import random
+
+    from guardjudge.metrics import binary_metrics, category_metrics, gold_class, pred_class
+
+    rnd = random.Random(0)
+    cats = ["harmful_content", "prompt_injection"]
+    rows = []
+    for _ in range(400):
+        gold = rnd.random() < 0.45
+        cat = rnd.choice(cats) if gold else "none"
+        pred = (rnd.random() < 0.85) if gold else (rnd.random() < 0.1)
+        pc = "none" if not pred else (cat if gold and rnd.random() < 0.8 else rnd.choice(cats + ["none"]))
+        rows.append({"gold": gold, "category": cat, "pred": pred, "pred_category": pc,
+                     "parsed_ok": True, "latency": None})
+    y, p = [r["gold"] for r in rows], [r["pred"] for r in rows]
+    b = binary_metrics(rows)
+    assert b["f1"] == round(sk.f1_score(y, p), 4)
+    assert b["f1_safe"] == round(sk.f1_score(y, p, pos_label=False), 4)
+    for avg in ("macro", "weighted", "micro"):
+        assert b[f"{avg}_f1"] == round(sk.f1_score(y, p, average=avg), 4)
+
+    known = set(cats)
+    cm = category_metrics(rows, known=known)
+    yc = [gold_class(r) for r in rows]
+    pc = [pred_class(r, known) for r in rows]
+    labels = cm["classes"]
+    assert cm["macro_f1"] == round(sk.f1_score(yc, pc, labels=labels, average="macro"), 4)
+    assert cm["weighted_f1"] == round(sk.f1_score(yc, pc, labels=labels, average="weighted"), 4)
+    assert cm["micro_f1"] == round(sk.f1_score(yc, pc, average="micro"), 4) == cm["accuracy"]

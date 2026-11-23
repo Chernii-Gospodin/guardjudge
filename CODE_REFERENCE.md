@@ -64,10 +64,10 @@ Loss считается только по JSON-вердикту.
 
 ## `src/guardjudge/metrics.py` — метрики (общие для evaluate и compare)
 
-- `binary_metrics(rows)`: tp/fp/fn/tn, accuracy, precision, recall, F1, FPR, parse_fail, задержка p50/p95.
+- `binary_metrics(rows)`: tp/fp/fn/tn, accuracy, precision, recall, FPR, parse_fail, задержка p50/p95 и варианты F1: `f1` (unsafe = положительный класс), `f1_safe`, `macro_f1` (среднее двух), `weighted_f1` (по размеру классов), `micro_f1` (= accuracy).
 - `group_metrics(rows, key)`: `binary_metrics` по `source` или `language`.
 - `recall_by_category(rows)`: доля пойманных атак в каждом семействе (бинарно, категорию ответа не проверяет).
-- `category_metrics(rows, known)`: многоклассовая оценка, классы `none` + категории атак. Возвращает `category_accuracy_on_detected` (правильная категория среди пойманных атак), `accuracy`, `macro_f1`, `per_class` (P/R/F1/support) и `confusion[gold][pred]`. Ответ «unsafe» без категории или с неизвестной категорией считается классом `unsafe_unspecified`.
+- `category_metrics(rows, known)`: многоклассовая оценка, классы `none` + категории атак. Возвращает `category_accuracy_on_detected` (правильная категория среди пойманных атак), `accuracy`, `macro_f1`, `weighted_f1`, `micro_f1` (совпадают с `sklearn.metrics.f1_score` при `labels` = классы из разметки), `per_class` (P/R/F1/support) и `confusion[gold][pred]`. Ответ «unsafe» без категории или с неизвестной категорией считается классом `unsafe_unspecified`.
 
 ## `src/guardjudge/client.py` — клиент к серверу
 
@@ -111,6 +111,8 @@ Loss считается только по JSON-вердикту.
 Графики по отчётам `evaluate.py`, метрики пересчитываются из `predictions`:
 - `plot_detection()` → `category_detection.png`: доля пойманных атак по семействам, все модели.
 - `plot_prf()` → `category_prf.png`: precision / recall / F1 по классам `none` + категории, только модели в JSON-формате.
+- `plot_f1_variants()` → `f1_variants.png`: все варианты F1 рядом, бинарные (все модели) и по категориям.
+- У каждой модели один цвет на всех графиках.
 - `plot_groups(reports, key)` → `f1_by_language.png`, `f1_by_source.png`: F1 (сверху) и FPR (снизу, ось масштабируется по данным) по языкам и источникам. Учитываются группы от `--min-group` примеров (по умолчанию 30).
 - Над каждым столбцом подписано значение; при 4+ моделях подписи вертикальные.
 - `plot_confusions()` → `confusion_<i>_<имя>.png`: матрица ошибок, нормированная по строке (в скобках количество).

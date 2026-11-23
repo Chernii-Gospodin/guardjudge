@@ -6,6 +6,7 @@ Writes:
   category_detection.png  share of attacks caught per attack family (binary verdict), all models
   category_prf.png        precision / recall / F1 per class (none + attack categories), judge-format models
   confusion_<n>.png       row-normalised confusion matrix (gold -> predicted class) per judge-format model
+  f1_variants.png         every F1 flavour: binary (unsafe / safe / macro / weighted / micro) and category level
   f1_by_language.png      binary F1 (and FPR) per language, all models
   f1_by_source.png        binary F1 (and FPR) per data source, all models
 
@@ -24,7 +25,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from guardjudge.metrics import (UNSPECIFIED, category_metrics, group_metrics,  # noqa: E402
+from guardjudge.metrics import (UNSPECIFIED, binary_metrics, category_metrics, group_metrics,  # noqa: E402
                                 recall_by_category)
 from guardjudge.schema import CATEGORIES  # noqa: E402
 
@@ -35,6 +36,11 @@ def class_order(classes):
     return sorted(classes, key=lambda c: (c != "none", c == UNSPECIFIED, c))
 
 
+# model name -> colour, fixed once for all plots (set in main) so that a model keeps its colour
+# even on plots where some models are absent (e.g. category plots skip native guard formats)
+COLORS: dict[str, str] = {}
+
+
 def bars(ax, groups, series, ylabel, title):
     """Grouped bars: one group per x label, one bar per series (model); every bar gets its value.
     With many models the labels are written vertically so that they do not overlap."""
@@ -42,7 +48,7 @@ def bars(ax, groups, series, ylabel, title):
     w = 0.8 / max(len(series), 1)
     vertical = len(series) >= 4
     for i, (name, vals) in enumerate(series):
-        b = ax.bar(x + i * w - 0.4 + w / 2, vals, w, label=name)
+        b = ax.bar(x + i * w - 0.4 + w / 2, vals, w, label=name, color=COLORS.get(name))
         ax.bar_label(b, fmt="%.2f", fontsize=6.5 if vertical else 7.5, padding=2,
                      rotation=90 if vertical else 0)
     ax.set_xticks(x, groups)
@@ -166,6 +172,35 @@ def plot_groups(reports, key: str, out: Path, min_n: int = 30) -> Path | None:
     return path
 
 
+def plot_f1_variants(reports, cms, out: Path) -> Path | None:
+    """Every F1 flavour side by side: binary (all models) and category level (judge format)."""
+    overall = [(r["name"], binary_metrics(r["predictions"]) if r.get("predictions") else r["overall"])
+               for r in reports]
+    if not overall:
+        return None
+    bin_keys = [("f1", "F1\n(unsafe)"), ("f1_safe", "F1\n(safe)"), ("macro_f1", "macro-F1"),
+                ("weighted_f1", "weighted-F1"), ("micro_f1", "micro-F1\n(= accuracy)")]
+    cat_keys = [("macro_f1", "macro-F1"), ("weighted_f1", "weighted-F1"), ("micro_f1", "micro-F1\n(= accuracy)")]
+    panels = 2 if cms else 1
+    fig, axes = plt.subplots(1, panels, figsize=(9 + 5 * (panels - 1) + 0.6 * len(reports), 5.2),
+                             gridspec_kw={"width_ratios": [5, 3][:panels]}, squeeze=False)
+    bars(axes[0][0], [lbl for _, lbl in bin_keys],
+         [(n, [m.get(k, 0) or 0 for k, _ in bin_keys]) for n, m in overall],
+         "значение", "Вердикт safe / unsafe (2 класса)")
+    if cms:
+        bars(axes[0][1], [lbl for _, lbl in cat_keys],
+             [(n, [cm.get(k, 0) or 0 for k, _ in cat_keys]) for n, cm in cms],
+             "", "Категории: none + семейства атак")
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, fontsize=8, loc="lower center", ncol=min(len(reports), 3))
+    fig.suptitle("Варианты F1")
+    fig.tight_layout(rect=(0, 0.1, 1, 0.95))
+    path = out / "f1_variants.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("reports", nargs="+")
@@ -175,8 +210,11 @@ def main() -> None:
     reports = [json.loads(Path(p).read_text(encoding="utf-8")) for p in a.reports if Path(p).is_file()]
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    COLORS.update({r["name"]: palette[i % len(palette)] for i, r in enumerate(reports)})
     cms = judge_metrics(reports)
-    written = [plot_detection(reports, out), plot_prf(cms, out), *plot_confusions(cms, out),
+    written = [plot_f1_variants(reports, cms, out), plot_detection(reports, out), plot_prf(cms, out),
+               *plot_confusions(cms, out),
                plot_groups(reports, "language", out, a.min_group), plot_groups(reports, "source", out, a.min_group)]
     for p in written:
         if p:
